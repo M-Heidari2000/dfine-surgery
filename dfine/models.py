@@ -52,10 +52,10 @@ class YDecoder(nn.Module):
 
         self.mlp_layers = nn.Sequential(
             nn.Linear(a_dim, hidden_dim),
-            nn.ReLU(),
+            # nn.ReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
+            # nn.ReLU(),
             nn.Dropout(p=dropout_p),
             nn.Linear(hidden_dim, y_dim),
         )
