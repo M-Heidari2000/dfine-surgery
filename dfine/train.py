@@ -2,10 +2,10 @@ import os
 import json
 import torch
 import einops
-from typing import Optional
 import numpy as np
 from pathlib import Path
 from datetime import datetime
+from .control_utils import compute_gramians
 from torch.nn.utils import clip_grad_norm_
 from torch.utils.tensorboard.writer import SummaryWriter
 from .memory import ReplayBuffer
@@ -131,14 +131,24 @@ def train_dfine(
 
         y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
 
+        # balancing loss
+        Wc, Wo = compute_gramians(
+            A=dfine.A,
+            B=dfine.B,
+            C=dfine.C
+        )
+        balancing_loss = 1 / torch.trace(Wc @ Wo)
+
+        total_loss = y_pred_loss + config.balancing_weight * balancing_loss
         
         optimizer.zero_grad()
-        y_pred_loss.backward()
+        total_loss.backward()
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
-        writer.add_scalar("train/y prediction loss", y_pred_loss.item(), update)
-        print(f"update step: {update+1}, train_loss: {y_pred_loss.item()}")
+        writer.add_scalar("train/ y prediction loss", y_pred_loss.item(), update)
+        writer.add_scalar("train/ balancing loss", balancing_loss.item(), update)
+        print(f"update step: {update+1}, train_loss: {total_loss.item()}")
 
         # test
         if update % config.test_interval == 0:
@@ -199,8 +209,19 @@ def train_dfine(
 
             y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
 
-            writer.add_scalar("test/y prediction loss", y_pred_loss.item(), update)
-            print(f"evaluation step: {update+1}, test_loss: {y_pred_loss.item()}")
+            # balancing loss
+            Wc, Wo = compute_gramians(
+                A=dfine.A,
+                B=dfine.B,
+                C=dfine.C
+            )
+            balancing_loss = 1 / torch.trace(Wc @ Wo)
+
+            total_loss = y_pred_loss + config.balancing_weight * balancing_loss
+            
+            writer.add_scalar("test/ y prediction loss", y_pred_loss.item(), update)
+            writer.add_scalar("test/ balancing loss", balancing_loss.item(), update)
+            print(f"evaluation step: {update+1}, test_loss: {total_loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(y_decoder.state_dict(), log_dir / "y_decoder.pth")
@@ -366,8 +387,8 @@ def train_z_decoder(
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
-        writer.add_scalar("train/z reconstruction loss", z_recon_loss.item(), update)
-        writer.add_scalar("train/z prediction loss", z_pred_loss.item(), update)
+        writer.add_scalar("train/ z reconstruction loss", z_recon_loss.item(), update)
+        writer.add_scalar("train/ z prediction loss", z_pred_loss.item(), update)
         print(f"update step: {update+1}, train_loss: {z_recon_loss.item()}")
 
         # test
@@ -444,8 +465,8 @@ def train_z_decoder(
             recon_z = einops.rearrange(recon_z, "L b z -> (L b) z")
             z_recon_loss = criterion(recon_z, z_flatten)
             
-            writer.add_scalar("test/z reconstruction loss", z_recon_loss.item(), update)
-            writer.add_scalar("test/z prediction loss", z_pred_loss.item(), update)
+            writer.add_scalar("test/ z reconstruction loss", z_recon_loss.item(), update)
+            writer.add_scalar("test/ z prediction loss", z_pred_loss.item(), update)
             print(f"evaluation step: {update+1}, test_loss: {z_recon_loss.item()}")
 
 
