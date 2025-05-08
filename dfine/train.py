@@ -97,6 +97,7 @@ def train_dfine(
         cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
         
         y_pred_loss = 0
+        slowness_loss = 0
         
         for t in range(config.chunk_length - config.prediction_k - 1):
             mean, cov = dfine.dynamics_update(
@@ -112,6 +113,8 @@ def train_dfine(
 
             # tensors to hold predictions of future ys & cs & as
             pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+            pred_x = torch.zeros((config.prediction_k + 1, config.batch_size, config.x_dim), device=device)
+            pred_x[0] = mean
 
             pred_mean = mean
             pred_cov = cov
@@ -122,23 +125,31 @@ def train_dfine(
                     cov=pred_cov,
                     u=u[t+k+1]
                 )
+                pred_x[k+1] = pred_mean
                 pred_y[k] = y_decoder(pred_mean @ dfine.C.T)
 
+            # prediction loss
             true_y = y[t+2:t+2+config.prediction_k]
             true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
             pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
             y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
+            # slowness loss
+            slowness_loss += criterion(pred_x[1:], pred_x[:-1])
+            
         y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+        slowness_loss /= (config.chunk_length - config.prediction_k - 1)
 
+        loss = y_pred_loss + config.slowness_weight * slowness_loss
         
         optimizer.zero_grad()
-        y_pred_loss.backward()
+        loss.backward()
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
+        writer.add_scalar("train/slowness loss", slowness_loss.item(), update)
         writer.add_scalar("train/y prediction loss", y_pred_loss.item(), update)
-        print(f"update step: {update+1}, train_loss: {y_pred_loss.item()}")
+        print(f"update step: {update+1}, train_loss: {loss.item()}")
 
         # test
         if update % config.test_interval == 0:
@@ -165,6 +176,7 @@ def train_dfine(
             cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
             
             y_pred_loss = 0
+            slowness_loss = 0
             
             for t in range(config.chunk_length - config.prediction_k - 1):
                 mean, cov = dfine.dynamics_update(
@@ -180,6 +192,8 @@ def train_dfine(
 
                 # tensors to hold predictions of future ys & cs & as
                 pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
+                pred_x = torch.zeros((config.prediction_k + 1, config.batch_size, config.x_dim), device=device)
+                pred_x[0] = mean
 
                 pred_mean = mean
                 pred_cov = cov
@@ -190,17 +204,25 @@ def train_dfine(
                         cov=pred_cov,
                         u=u[t+k+1]
                     )
+                    pred_x[k+1] = pred_mean
                     pred_y[k] = y_decoder(pred_mean @ dfine.C.T)
 
+                # prediction loss
                 true_y = y[t+2:t+2+config.prediction_k]
                 true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
                 pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
                 y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
-            y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+                # slowness loss
+                slowness_loss += criterion(pred_x[1:], pred_x[:-1])
 
+            y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+            slowness_loss /= (config.chunk_length - config.prediction_k - 1)
+            loss = y_pred_loss + config.slowness_weight * slowness_loss
+
+            writer.add_scalar("test/slowness loss", slowness_loss.item(), update)
             writer.add_scalar("test/y prediction loss", y_pred_loss.item(), update)
-            print(f"evaluation step: {update+1}, test_loss: {y_pred_loss.item()}")
+            print(f"evaluation step: {update+1}, test_loss: {loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(y_decoder.state_dict(), log_dir / "y_decoder.pth")

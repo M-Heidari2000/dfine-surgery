@@ -19,5 +19,6 @@ class TrainConfig:
     eps: float = 1e-8
     clip_grad_norm: int = 1000
     device: str = "cpu"
+    slowness_weight: float = 1.0
     
     dict = asdict
