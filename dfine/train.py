@@ -2,7 +2,6 @@ import os
 import json
 import torch
 import einops
-from typing import Optional
 import numpy as np
 from pathlib import Path
 from datetime import datetime
@@ -97,6 +96,7 @@ def train_dfine(
         cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
         
         y_pred_loss = 0
+        a_pred_loss = 0
         
         for t in range(config.chunk_length - config.prediction_k - 1):
             mean, cov = dfine.dynamics_update(
@@ -110,7 +110,8 @@ def train_dfine(
                 a=a[t+1],
             )
 
-            # tensors to hold predictions of future ys & cs & as
+            # tensors to hold predictions of future ys & as
+            pred_a = torch.zeros((config.prediction_k, config.batch_size, config.a_dim), device=device)
             pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
 
             pred_mean = mean
@@ -122,23 +123,34 @@ def train_dfine(
                     cov=pred_cov,
                     u=u[t+k+1]
                 )
+                pred_a[k] = pred_mean @ dfine.C.T
                 pred_y[k] = y_decoder(pred_mean @ dfine.C.T)
 
+            # y prediction
             true_y = y[t+2:t+2+config.prediction_k]
             true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
             pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
             y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
-        y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+            # a prediction
+            true_a = a[t+2:t+2+config.prediction_k]
+            true_a_flatten = einops.rearrange(true_a, "k b a -> (k b) a")
+            pred_a_flatten = einops.rearrange(pred_a, "k b a -> (k b) a")
+            a_pred_loss += criterion(pred_a_flatten, true_a_flatten)
 
+        y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+        a_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+
+        loss = y_pred_loss + config.a_prediction_weight * a_pred_loss
         
         optimizer.zero_grad()
-        y_pred_loss.backward()
+        loss.backward()
         clip_grad_norm_(all_params, config.clip_grad_norm)
         optimizer.step()
 
-        writer.add_scalar("train/y prediction loss", y_pred_loss.item(), update)
-        print(f"update step: {update+1}, train_loss: {y_pred_loss.item()}")
+        writer.add_scalar("train/ y prediction loss", y_pred_loss.item(), update)
+        writer.add_scalar("train/ a prediction loss", a_pred_loss.item(), update)
+        print(f"update step: {update+1}, train_loss: {loss.item()}")
 
         # test
         if update % config.test_interval == 0:
@@ -165,6 +177,7 @@ def train_dfine(
             cov = torch.eye(config.x_dim, device=device).repeat([config.batch_size, 1, 1])
             
             y_pred_loss = 0
+            a_pred_loss = 0
             
             for t in range(config.chunk_length - config.prediction_k - 1):
                 mean, cov = dfine.dynamics_update(
@@ -178,7 +191,8 @@ def train_dfine(
                     a=a[t+1],
                 )
 
-                # tensors to hold predictions of future ys & cs & as
+                # tensors to hold predictions of future ys & as
+                pred_a = torch.zeros((config.prediction_k, config.batch_size, config.a_dim), device=device)
                 pred_y = torch.zeros((config.prediction_k, config.batch_size, train_replay_buffer.y_dim), device=device)
 
                 pred_mean = mean
@@ -190,17 +204,29 @@ def train_dfine(
                         cov=pred_cov,
                         u=u[t+k+1]
                     )
+                    pred_a[k] = pred_mean @ dfine.C.T
                     pred_y[k] = y_decoder(pred_mean @ dfine.C.T)
 
+                # y prediction
                 true_y = y[t+2:t+2+config.prediction_k]
                 true_y_flatten = einops.rearrange(true_y, "k b y -> (k b) y")
                 pred_y_flatten = einops.rearrange(pred_y, "k b y -> (k b) y")
                 y_pred_loss += criterion(pred_y_flatten, true_y_flatten)
 
-            y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+                # a prediction
+                true_a = a[t+2:t+2+config.prediction_k]
+                true_a_flatten = einops.rearrange(true_a, "k b a -> (k b) a")
+                pred_a_flatten = einops.rearrange(pred_a, "k b a -> (k b) a")
+                a_pred_loss += criterion(pred_a_flatten, true_a_flatten)
 
-            writer.add_scalar("test/y prediction loss", y_pred_loss.item(), update)
-            print(f"evaluation step: {update+1}, test_loss: {y_pred_loss.item()}")
+            y_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+            a_pred_loss /= (config.chunk_length - config.prediction_k - 1)
+
+            loss = y_pred_loss + config.a_prediction_weight * a_pred_loss
+
+            writer.add_scalar("test/ y prediction loss", y_pred_loss.item(), update)
+            writer.add_scalar("test/ a prediction loss", a_pred_loss.item(), update)
+            print(f"evaluation step: {update+1}, test_loss: {loss.item()}")
 
     torch.save(encoder.state_dict(), log_dir / "encoder.pth")
     torch.save(y_decoder.state_dict(), log_dir / "y_decoder.pth")
